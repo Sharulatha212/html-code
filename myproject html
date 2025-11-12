@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Proctoring - Exam</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container" id="login-screen">
+    <h1>AI Exam Proctoring</h1>
+    <form id="loginForm">
+      <label for="username">Student ID / Email</label>
+      <input id="username" name="username" required />
+      <label for="fullname">Full name</label>
+      <input id="fullname" name="fullname" required />
+      <button type="submit">Start Exam</button>
+    </form>
+  </div>
+
+  <div class="container hidden" id="exam-screen">
+    <h2 id="examTitle">Exam: Web Development</h2>
+    <div class="video-wrap">
+      <video id="webcam" autoplay playsinline></video>
+      <canvas id="snap" class="hidden"></canvas>
+    </div>
+
+    <div class="controls">
+      <div>Time left: <span id="time">60:00</span></div>
+      <div>Flags: <span id="flagsCount">0</span></div>
+      <button id="endExam">End Exam</button>
+    </div>
+
+    <div id="eventsLog"></div>
+  </div>
+
+  <script>
+    const loginForm = document.getElementById('loginForm');
+    const loginScreen = document.getElementById('login-screen');
+    const examScreen = document.getElementById('exam-screen');
+
+    const webcam = document.getElementById('webcam');
+    const snap = document.getElementById('snap');
+    const eventsLog = document.getElementById('eventsLog');
+    const flagsCount = document.getElementById('flagsCount');
+
+    let captureInterval = null;
+    let flags = 0;
+    let student = {};
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      student.username = document.getElementById('username').value;
+      student.fullname = document.getElementById('fullname').value;
+      // In a real app, authenticate via API here.
+      loginScreen.classList.add('hidden');
+      examScreen.classList.remove('hidden');
+      await startWebcamAndCapture();
+    });
+
+    async function startWebcamAndCapture() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        webcam.srcObject = stream;
+
+        // small canvas to capture frames
+        const ctx = snap.getContext('2d');
+        const captureRateMs = 2000; // capture every 2s (adjust as needed)
+        snap.width = 320;
+        snap.height = 240;
+
+        // Send an initial 'start' event to server with student info
+        await fetch('/api/exam/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: student.username, fullname: student.fullname, exam: 'Web Development' })
+        });
+
+        captureInterval = setInterval(async () => {
+          ctx.drawImage(webcam, 0, 0, snap.width, snap.height);
+          const blob = await new Promise(resolve => snap.toBlob(resolve, 'image/jpeg', 0.8));
+          const form = new FormData();
+          form.append('frame', blob, 'frame.jpg');
+          form.append('username', student.username);
+          // optional: include timestamp, examId, etc.
+          try {
+            const resp = await fetch('/api/uploadFrame', { method: 'POST', body: form });
+            if (resp.ok) {
+              const json = await resp.json();
+              if (json.flagged) {
+                flags++;
+                flagsCount.textContent = flags;
+                const div = document.createElement('div');
+                div.className = 'flag';
+                div.textContent = `${new Date().toLocaleTimeString()}: Flagged - ${json.reason}`;
+                eventsLog.prepend(div);
+              }
+            } else {
+              console.warn('Frame upload failed', resp.status);
+            }
+          } catch(err) {
+            console.error('Error uploading frame', err);
+          }
+        }, captureRateMs);
+      } catch (err) {
+        alert('Unable to access webcam. Allow camera and reload.');
+        console.error(err);
+      }
+    }
+
+    document.getElementById('endExam').addEventListener('click', async () => {
+      clearInterval(captureInterval);
+      // inform backend exam ended
+      await fetch('/api/exam/end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: student.username })
+      });
+      alert('Exam ended. Thank you.');
+      location.reload();
+    });
+  </script>
+</body>
+</html>
